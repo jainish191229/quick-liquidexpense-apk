@@ -1,0 +1,509 @@
+name: Build LiquidGlass Expense APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Generate Liquid Glass Expense App Source
+        run: |
+          mkdir -p src/main/java/com/s25/quickexpense
+          mkdir -p src/main/res/values
+
+          cat << 'EOF' > settings.gradle.kts
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "QuickExpense"
+          EOF
+
+          cat << 'EOF' > build.gradle.kts
+          plugins {
+              id("com.android.application") version "8.5.2"
+              id("org.jetbrains.kotlin.android") version "1.9.24"
+          }
+
+          android {
+              namespace = "com.s25.quickexpense"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.s25.quickexpense"
+                  minSdk = 27
+                  targetSdk = 34
+                  versionCode = 2
+                  versionName = "2.0-LiquidGlass"
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/res/values/styles.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="LiquidGlassTheme" parent="@android:style/Theme.DeviceDefault.Light.NoActionBar">
+                  <item name="android:windowIsTranslucent">true</item>
+                  <item name="android:windowBackground">@android:color/transparent</item>
+                  <item name="android:windowContentOverlay">@null</item>
+                  <item name="android:windowNoTitle">true</item>
+                  <item name="android:backgroundDimEnabled">true</item>
+                  <item name="android:backgroundDimAmount">0.18</item>
+                  <item name="android:windowBlurBehindEnabled">true</item>
+                  <item name="android:windowBlurBehindRadius">55dp</item>
+                  <item name="android:statusBarColor">@android:color/transparent</item>
+                  <item name="android:navigationBarColor">@android:color/transparent</item>
+              </style>
+          </resources>
+          EOF
+
+          cat << 'EOF' > src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application
+                  android:label="Quick Expense"
+                  android:theme="@style/LiquidGlassTheme">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:showWhenLocked="true"
+                      android:turnScreenOn="true"
+                      android:excludeFromRecents="true"
+                      android:windowSoftInputMode="stateVisible|adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat << 'EOF' > src/main/java/com/s25/quickexpense/MainActivity.kt
+          package com.s25.quickexpense
+
+          import android.app.Activity
+          import android.app.TimePickerDialog
+          import android.content.Context
+          import android.graphics.Color
+          import android.graphics.Typeface
+          import android.graphics.drawable.GradientDrawable
+          import android.graphics.drawable.LayerDrawable
+          import android.os.Build
+          import android.os.Bundle
+          import android.text.InputType
+          import android.util.TypedValue
+          import android.view.Gravity
+          import android.view.View
+          import android.view.ViewGroup
+          import android.view.WindowManager
+          import android.view.animation.AlphaAnimation
+          import android.view.animation.AnimationSet
+          import android.view.animation.DecelerateInterpolator
+          import android.view.animation.ScaleAnimation
+          import android.view.inputmethod.InputMethodManager
+          import android.widget.*
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.text.SimpleDateFormat
+          import java.util.*
+
+          class MainActivity : Activity() {
+
+              private lateinit var rootWrapper: LinearLayout
+              private lateinit var glassCard: LinearLayout
+              private lateinit var secondaryPillContainer: LinearLayout
+
+              // Expense State
+              private var expenseTitle: String = ""
+              private var expenseAmount: Double = 0.0
+              private var expenseCategory: String = "Food & Drinks"
+              private var expenseAccount: String = "Expenses"
+              private var expensePayment: String = "UPI / Card"
+              private val selectedCalendar: Calendar = Calendar.getInstance()
+              private val displayedMonthCalendar: Calendar = Calendar.getInstance()
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+
+                  // Show over S25 Ultra lock screen & enable hardware blur
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                      setShowWhenLocked(true)
+                      setTurnScreenOn(true)
+                  }
+                  window.addFlags(
+                      WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+                      WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                      WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                      WindowManager.LayoutParams.FLAG_BLUR_BEHIND
+                  )
+
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                      window.attributes.blurBehindRadius = 65
+                      window.attributes = window.attributes
+                  }
+
+                  // Default to current date and time
+                  selectedCalendar.timeInMillis = System.currentTimeMillis()
+                  displayedMonthCalendar.timeInMillis = selectedCalendar.timeInMillis
+
+                  val outerScroll = ScrollView(this).apply {
+                      isFillViewport = true
+                      setBackgroundColor(Color.TRANSPARENT)
+                  }
+
+                  rootWrapper = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                      setPadding(dp(14), dp(42), dp(14), dp(24))
+                      setOnClickListener { finish() } // Tap outside to dismiss
+                  }
+
+                  glassCard = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      background = createLiquidGlassDrawable()
+                      elevation = dp(18).toFloat()
+                      setPadding(dp(20), dp(20), dp(20), dp(18))
+                      isClickable = true
+                      layoutParams = LinearLayout.LayoutParams(
+                          LinearLayout.LayoutParams.MATCH_PARENT,
+                          LinearLayout.LayoutParams.WRAP_CONTENT
+                      )
+                  }
+
+                  secondaryPillContainer = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER
+                      setPadding(0, dp(12), 0, 0)
+                  }
+
+                  rootWrapper.addView(glassCard)
+                  rootWrapper.addView(secondaryPillContainer)
+                  outerScroll.addView(rootWrapper)
+                  setContentView(outerScroll)
+
+                  // Start Flow: 1. Title -> 2. Amount -> 3. Date -> 4. Category -> 5. Overview
+                  showTitleStep()
+              }
+
+              // ============================================================
+              // STEP 1: TITLE ("What is the expense about?")
+              // ============================================================
+              private fun showTitleStep() {
+                  animateCardTransition()
+                  glassCard.removeAllViews()
+                  secondaryPillContainer.removeAllViews()
+
+                  val header = TextView(this).apply {
+                      text = "What is the expense about?"
+                      setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+                      typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                      setTextColor(Color.parseColor("#111114"))
+                      setPadding(dp(4), 0, dp(4), dp(14))
+                  }
+
+                  val titleInput = EditText(this).apply {
+                      hint = "Title"
+                      setText(expenseTitle)
+                      setHintTextColor(Color.parseColor("#9E9EA8"))
+                      setTextColor(Color.parseColor("#111114"))
+                      setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+                      background = createFrostedInputBox()
+                      setPadding(dp(18), dp(14), dp(18), dp(14))
+                      isSingleLine = true
+                      inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                  }
+
+                  val buttonRow = createActionRow(
+                      cancelText = "Cancel",
+                      doneText = "Done",
+                      onCancel = { finish() },
+                      onDone = {
+                          val entered = titleInput.text.toString().trim()
+                          expenseTitle = if (entered.isEmpty()) "Expense" else entered
+                          showAmountStep()
+                      }
+                  )
+
+                  glassCard.addView(header)
+                  glassCard.addView(titleInput)
+                  glassCard.addView(space(16))
+                  glassCard.addView(buttonRow)
+
+                  // Subtle History Pill below main card
+                  val historyPill = TextView(this).apply {
+                      text = "📊 History • ₹${formatMoney(getTotalSpent())}"
+                      setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                      typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                      setTextColor(Color.parseColor("#1C1C1E"))
+                      background = createGlassPillDrawable("#D8F2F3F8", 50)
+                      setPadding(dp(16), dp(8), dp(16), dp(8))
+                      elevation = dp(6).toFloat()
+                      setOnClickListener { showHistoryDialog() }
+                  }
+                  secondaryPillContainer.addView(historyPill)
+
+                  focusAndShowKeyboard(titleInput)
+              }
+
+              // ============================================================
+              // STEP 2: AMOUNT ("Amount")
+              // ============================================================
+              private fun showAmountStep() {
+                  animateCardTransition()
+                  glassCard.removeAllViews()
+                  secondaryPillContainer.removeAllViews()
+
+                  val header = TextView(this).apply {
+                      text = "Amount"
+                      setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+                      typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                      setTextColor(Color.parseColor("#2C2C2E"))
+                      setPadding(dp(4), 0, dp(4), dp(12))
+                  }
+
+                  val amountInput = EditText(this).apply {
+                      hint = "0"
+                      if (expenseAmount > 0.0) {
+                          setText(formatMoneyClean(expenseAmount))
+                      }
+                      setHintTextColor(Color.parseColor("#A0A0A8"))
+                      setTextColor(Color.parseColor("#111114"))
+                      setTextSize(TypedValue.COMPLEX_UNIT_SP, 26f)
+                      typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                      gravity = Gravity.CENTER
+                      background = createFrostedInputBox()
+                      setPadding(dp(18), dp(16), dp(18), dp(16))
+                      isSingleLine = true
+                      inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+                  }
+
+                  val buttonRow = createActionRow(
+                      cancelText = "Cancel",
+                      doneText = "Done",
+                      onCancel = { finish() },
+                      onDone = {
+                          val raw = amountInput.text.toString().trim()
+                          val parsed = raw.toDoubleOrNull()
+                          if (parsed == null || parsed <= 0.0) {
+                              Toast.makeText(this, "Please enter an amount", Toast.LENGTH_SHORT).show()
+                          } else {
+                              expenseAmount = parsed
+                              hideKeyboard(amountInput)
+                              showDateStep(returnToOverview = false)
+                          }
+                      }
+                  )
+
+                  glassCard.addView(header)
+                  glassCard.addView(amountInput)
+                  glassCard.addView(space(16))
+                  glassCard.addView(buttonRow)
+
+                  focusAndShowKeyboard(amountInput)
+              }
+
+              // ============================================================
+              // STEP 3: DATE ("What is the date?" - Default Current Date)
+              // ============================================================
+              private fun showDateStep(returnToOverview: Boolean) {
+                  animateCardTransition()
+                  glassCard.removeAllViews()
+                  secondaryPillContainer.removeAllViews()
+
+                  val header = TextView(this).apply {
+                      text = "What is the date?"
+                      setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+                      typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                      setTextColor(Color.parseColor("#111114"))
+                      setPadding(dp(4), 0, dp(4), dp(12))
+                  }
+                  glassCard.addView(header)
+                  glassCard.addView(divider())
+                  glassCard.addView(space(10))
+
+                  // Month Header Row ("October 2026 >" and "<  >")
+                  val monthHeaderRow = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      setPadding(dp(4), dp(4), dp(4), dp(10))
+                  }
+
+                  val monthFormat = SimpleDateFormat("MMMM yyyy", Locale.getDefault())
+                  val monthTitle = TextView(this).apply {
+                      text = "${monthFormat.format(displayedMonthCalendar.time)} ›"
+                      setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+                      typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                      setTextColor(Color.parseColor("#111114"))
+                      layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                  }
+
+                  val prevBtn = TextView(this).apply {
+                      text = "‹"
+                      setTextSize(TypedValue.COMPLEX_UNIT_SP, 26f)
+                      setTextColor(Color.parseColor("#1C1C1E"))
+                      setPadding(dp(14), 0, dp(14), 0)
+                      setOnClickListener {
+                          displayedMonthCalendar.add(Calendar.MONTH, -1)
+                          showDateStep(returnToOverview)
+                      }
+                  }
+
+                  val nextBtn = TextView(this).apply {
+                      text = "›"
+                      setTextSize(TypedValue.COMPLEX_UNIT_SP, 26f)
+                      setTextColor(Color.parseColor("#1C1C1E"))
+                      setPadding(dp(14), 0, dp(8), 0)
+                      setOnClickListener {
+                          displayedMonthCalendar.add(Calendar.MONTH, 1)
+                          showDateStep(returnToOverview)
+                      }
+                  }
+
+                  monthHeaderRow.addView(monthTitle)
+                  monthHeaderRow.addView(prevBtn)
+                  monthHeaderRow.addView(nextBtn)
+                  glassCard.addView(monthHeaderRow)
+
+                  // Days of Week Row (SUN MON TUE WED THU FRI SAT)
+                  val daysRow = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      setPadding(0, dp(2), 0, dp(6))
+                  }
+                  val dayNames = listOf("SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT")
+                  for (d in dayNames) {
+                      val tv = TextView(this).apply {
+                          text = d
+                          gravity = Gravity.CENTER
+                          setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                          typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                          setTextColor(Color.parseColor("#8E8E93"))
+                          layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                      }
+                      daysRow.addView(tv)
+                  }
+                  glassCard.addView(daysRow)
+
+                  // Calendar Day Grid
+                  val tempCal = (displayedMonthCalendar.clone() as Calendar).apply {
+                      set(Calendar.DAY_OF_MONTH, 1)
+                  }
+                  val firstDayOfWeek = tempCal.get(Calendar.DAY_OF_WEEK) - 1 // 0 = Sunday
+                  val maxDaysInMonth = tempCal.getActualMaximum(Calendar.DAY_OF_MONTH)
+
+                  var currentCell = 0
+                  var dayCounter = 1
+                  val totalRows = Math.ceil((firstDayOfWeek + maxDaysInMonth) / 7.0).toInt()
+
+                  for (r in 0 until totalRows) {
+                      val weekRow = LinearLayout(this).apply {
+                          orientation = LinearLayout.HORIZONTAL
+                          gravity = Gravity.CENTER_VERTICAL
+                          setPadding(0, dp(2), 0, dp(2))
+                      }
+                      for (c in 0 until 7) {
+                          val cellContainer = FrameLayout(this).apply {
+                              layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f)
+                          }
+                          if (currentCell >= firstDayOfWeek && dayCounter <= maxDaysInMonth) {
+                              val dayNum = dayCounter
+                              val isSelected = (
+                                  selectedCalendar.get(Calendar.YEAR) == displayedMonthCalendar.get(Calendar.YEAR) &&
+                                  selectedCalendar.get(Calendar.MONTH) == displayedMonthCalendar.get(Calendar.MONTH) &&
+                                  selectedCalendar.get(Calendar.DAY_OF_MONTH) == dayNum
+                              )
+
+                              val dayTv = TextView(this).apply {
+                                  text = dayNum.toString()
+                                  gravity = Gravity.CENTER
+                                  setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+                                  typeface = Typeface.create(
+                                      "sans-serif-medium",
+                                      if (isSelected) Typeface.BOLD else Typeface.NORMAL
+                                  )
+                                  setTextColor(if (isSelected) Color.WHITE else Color.parseColor("#111114"))
+                                  if (isSelected) {
+                                      background = GradientDrawable().apply {
+                                          shape = GradientDrawable.OVAL
+                                          setColor(Color.parseColor("#007AFF"))
+                                      }
+                                  }
+                                  layoutParams = FrameLayout.LayoutParams(dp(36), dp(36), Gravity.CENTER)
+                                  setOnClickListener {
+                                      selectedCalendar.set(Calendar.YEAR, displayedMonthCalendar.get(Calendar.YEAR))
+                                      selectedCalendar.set(Calendar.MONTH, displayedMonthCalendar.get(Calendar.MONTH))
+                                      selectedCalendar.set(Calendar.DAY_OF_MONTH, dayNum)
+                                      showDateStep(returnToOverview)
+                                  }
+                              }
+                              cellContainer.addView(dayTv)
+                              dayCounter++
+                          }
+                          weekRow.addView(cellContainer)
+                          currentCell++
+                      }
+                      glassCard.addView(weekRow)
+                  }
+
+                  // Time Row ("Time" on left, "9:41 AM" pill on right)
+                  val timeRow = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      setPadding(dp(6), dp(10), dp(6), dp(6))
+                  }
+                  val timeLabel = TextView(this).apply {
+                      text = "Time"
+                      setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+                      typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                      setTextColor(Color.parseColor("#111114"))
+                      layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                  }
+                  val timeFormat = SimpleDateFormat("h:mm a", Locale.getDefault())
+                  val timePill = TextView(this).apply {
+                      text = timeFormat.format(selectedCalendar.time)
+                      setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+                      typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                      setTextColor(Color.parseColor("#111114"))
+                      background = createGlassPillDrawable("#D2D4DC", 18)
+                      setPadding(dp(14), dp(6), dp(14), dp(6))
+                      setOnClickListener {
+                          TimePickerDialog(
+                              this@MainActivity,
+                              { _, hourOfDay, minute ->
+                                  selectedCalendar.set(Calendar.HOUR_OF_DAY, hourOfDay)
+                                  selectedCalendar.set(Calendar.MINUTE, minute)
+                                  showDateStep(returnToOverview)
+                              },
+                              selectedCalendar.get(Calendar.HOUR_OF_DAY),
+                              selectedCalendar.get(Calendar.MINUTE),
