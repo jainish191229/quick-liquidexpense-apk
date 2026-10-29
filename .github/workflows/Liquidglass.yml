@@ -1,4 +1,4 @@
-name: Build QuickExpense APK
+name: Build QuickExpense v2 APK
 
 on:
   push:
@@ -25,7 +25,7 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Generate and Build S25 Ultra Expense APK
+      - name: Generate and Build S25 Ultra Expense v2.0 APK
         run: |
           mkdir -p app_build/src/main/java/com/s25/quickexpense
           cd app_build
@@ -62,8 +62,8 @@ jobs:
                   applicationId = "com.s25.quickexpense"
                   minSdk = 27
                   targetSdk = 34
-                  versionCode = 1
-                  versionName = "1.0"
+                  versionCode = 2
+                  versionName = "2.0-OneUI"
               }
 
               compileOptions {
@@ -81,14 +81,14 @@ jobs:
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <application
                   android:label="Quick Expense"
-                  android:theme="@android:style/Theme.DeviceDefault.Dialog.NoActionBar">
+                  android:theme="@android:style/Theme.Translucent.NoTitleBar">
                   <activity
                       android:name=".MainActivity"
                       android:exported="true"
                       android:showWhenLocked="true"
                       android:turnScreenOn="true"
                       android:excludeFromRecents="true"
-                      android:windowSoftInputMode="stateAlwaysVisible|adjustPan">
+                      android:windowSoftInputMode="stateAlwaysHidden|adjustPan">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
                           <category android:name="android.intent.category.LAUNCHER" />
@@ -108,10 +108,12 @@ jobs:
           import android.graphics.drawable.GradientDrawable
           import android.os.Build
           import android.os.Bundle
-          import android.text.InputType
           import android.view.Gravity
+          import android.view.HapticFeedbackConstants
+          import android.view.View
+          import android.view.ViewGroup
+          import android.view.Window
           import android.view.WindowManager
-          import android.view.inputmethod.InputMethodManager
           import android.widget.*
           import org.json.JSONArray
           import org.json.JSONObject
@@ -120,12 +122,25 @@ jobs:
 
           class MainActivity : Activity() {
 
-              private lateinit var container: LinearLayout
+              private lateinit var sheetContainer: LinearLayout
+              private var amountString: String = ""
               private var enteredAmount: Double = 0.0
               private var enteredNote: String = ""
 
+              private val categories = listOf(
+                  Triple("🍔", "Food", "#FF5252"),
+                  Triple("🎬", "Movie", "#A855F7"),
+                  Triple("📚", "Study", "#3B82F6"),
+                  Triple("⛽", "Gas", "#F59E0B"),
+                  Triple("🎮", "Fun", "#10B981"),
+                  Triple("🛒", "Other", "#EC4899")
+              )
+
+              private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
+                  requestWindowFeature(Window.FEATURE_NO_TITLE)
 
                   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
                       setShowWhenLocked(true)
@@ -134,236 +149,687 @@ jobs:
                   window.addFlags(
                       WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
                       WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                      WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                      WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                      WindowManager.LayoutParams.FLAG_DIM_BEHIND
                   )
+                  window.attributes = window.attributes.apply { dimAmount = 0.75f }
 
-                  container = LinearLayout(this).apply {
+                  // Full-screen translucent tap-to-dismiss backdrop
+                  val rootBackdrop = FrameLayout(this).apply {
+                      setBackgroundColor(Color.parseColor("#8805060A"))
+                      setOnClickListener { finish() }
+                  }
+
+                  // Sleek One UI 7 Bottom Sheet Card
+                  sheetContainer = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
-                      setPadding(64, 56, 64, 56)
+                      isClickable = true
+                      setPadding(dp(20), dp(14), dp(20), dp(24))
                       background = GradientDrawable().apply {
-                          setColor(Color.parseColor("#1E1E24"))
-                          cornerRadius = 48f
+                          setColor(Color.parseColor("#0F111A"))
+                          cornerRadii = floatArrayOf(
+                              dp(32).toFloat(), dp(32).toFloat(),
+                              dp(32).toFloat(), dp(32).toFloat(),
+                              dp(16).toFloat(), dp(16).toFloat(),
+                              dp(16).toFloat(), dp(16).toFloat()
+                          )
+                          setStroke(dp(1), Color.parseColor("#2A2F45"))
                       }
                   }
 
-                  setContentView(container)
-                  showAmountStep()
+                  val sheetParams = FrameLayout.LayoutParams(
+                      ViewGroup.LayoutParams.MATCH_PARENT,
+                      ViewGroup.LayoutParams.WRAP_CONTENT,
+                      Gravity.BOTTOM
+                  ).apply {
+                      setMargins(dp(10), dp(20), dp(10), dp(12))
+                  }
+
+                  rootBackdrop.addView(sheetContainer, sheetParams)
+                  setContentView(rootBackdrop)
+
+                  showCalculatorStep()
               }
 
-              private fun showAmountStep() {
-                  container.removeAllViews()
+              private fun addDragHandle() {
+                  val handleWrapper = LinearLayout(this).apply {
+                      gravity = Gravity.CENTER
+                      setPadding(0, 0, 0, dp(12))
+                  }
+                  val pill = View(this).apply {
+                      background = GradientDrawable().apply {
+                          setColor(Color.parseColor("#3B425E"))
+                          cornerRadius = dp(10).toFloat()
+                      }
+                      layoutParams = LinearLayout.LayoutParams(dp(44), dp(5))
+                  }
+                  handleWrapper.addView(pill)
+                  sheetContainer.addView(handleWrapper)
+              }
 
-                  val title = TextView(this).apply {
-                      text = "💸 Add Expense"
-                      textSize = 22f
+              // ================= SCREEN 1: LOCK-SCREEN NUMPAD & AMOUNT =================
+              private fun showCalculatorStep() {
+                  sheetContainer.removeAllViews()
+                  addDragHandle()
+
+                  // Top Header Bar
+                  val topRow = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                  }
+
+                  val titleCol = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                  }
+                  titleCol.addView(TextView(this).apply {
+                      text = "⚡ S25 ULTRA QUICK EXPENSE"
+                      textSize = 11f
+                      setTypeface(null, Typeface.BOLD)
+                      setTextColor(Color.parseColor("#818CF8"))
+                  })
+                  titleCol.addView(TextView(this).apply {
+                      text = "Add New Spend"
+                      textSize = 20f
                       setTypeface(null, Typeface.BOLD)
                       setTextColor(Color.WHITE)
-                      gravity = Gravity.CENTER
-                  }
+                  })
 
-                  val totalText = TextView(this).apply {
-                      text = "Total Spent: ₹${String.format("%.2f", getTotalSpent())}"
-                      textSize = 14f
-                      setTextColor(Color.parseColor("#A0A0B0"))
-                      gravity = Gravity.CENTER
-                      setPadding(0, 8, 0, 32)
-                  }
-
-                  val amountInput = EditText(this).apply {
-                      hint = "Enter Amount (₹)"
-                      setHintTextColor(Color.parseColor("#707080"))
+                  val statsBtn = TextView(this).apply {
+                      text = "📊 Stats & History"
+                      textSize = 13f
+                      setTypeface(null, Typeface.BOLD)
                       setTextColor(Color.WHITE)
-                      textSize = 24f
+                      setPadding(dp(14), dp(8), dp(14), dp(8))
+                      background = GradientDrawable().apply {
+                          setColor(Color.parseColor("#1E2235"))
+                          cornerRadius = dp(20).toFloat()
+                          setStroke(dp(1), Color.parseColor("#3B4262"))
+                      }
+                      setOnClickListener {
+                          it.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                          showAnalyticsStep()
+                      }
+                  }
+
+                  topRow.addView(titleCol)
+                  topRow.addView(statsBtn)
+                  sheetContainer.addView(topRow)
+
+                  // Today vs Total Summary Mini-Cards
+                  val summaryRow = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      setPadding(0, dp(12), 0, dp(12))
+                  }
+                  summaryRow.addView(makeStatCard("TODAY'S SPEND", "₹${fmt(getTodaySpent())}", "#10B981"))
+                  val spacer = View(this).apply { layoutParams = LinearLayout.LayoutParams(dp(10), 1) }
+                  summaryRow.addView(spacer)
+                  summaryRow.addView(makeStatCard("TOTAL SPENT", "₹${fmt(getTotalSpent())}", "#6366F1"))
+                  sheetContainer.addView(summaryRow)
+
+                  // Live Giant Amount Display Box
+                  val displayCard = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
                       gravity = Gravity.CENTER
-                      inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+                      setPadding(dp(16), dp(14), dp(16), dp(12))
+                      background = GradientDrawable().apply {
+                          setColor(Color.parseColor("#08090E"))
+                          cornerRadius = dp(22).toFloat()
+                          setStroke(dp(2), Color.parseColor("#4F46E5"))
+                      }
+                  }
+
+                  val amountTextView = TextView(this).apply {
+                      text = if (amountString.isEmpty()) "₹ 0" else "₹ $amountString"
+                      textSize = 36f
+                      setTypeface(null, Typeface.BOLD)
+                      setTextColor(if (amountString.isEmpty()) Color.parseColor("#4B5563") else Color.WHITE)
+                      gravity = Gravity.CENTER
                   }
 
                   val noteInput = EditText(this).apply {
-                      hint = "Optional Note (e.g. Snacks, Ticket)"
-                      setHintTextColor(Color.parseColor("#707080"))
-                      setTextColor(Color.WHITE)
-                      textSize = 15f
+                      setText(enteredNote)
+                      hint = "✏️ Optional note (e.g. Burger, Petrol)..."
+                      setHintTextColor(Color.parseColor("#6B7280"))
+                      setTextColor(Color.parseColor("#E5E7EB"))
+                      textSize = 13f
                       gravity = Gravity.CENTER
+                      background = null
+                      setPadding(0, dp(6), 0, 0)
                   }
 
-                  val confirmBtn = makeButton("Confirm Amount ➡️", "#4F46E5") {
-                      val raw = amountInput.text.toString().trim()
-                      val value = raw.toDoubleOrNull()
-                      if (value == null || value <= 0.0) {
-                          Toast.makeText(this, "Enter a valid amount!", Toast.LENGTH_SHORT).show()
-                      } else {
-                          enteredAmount = value
-                          enteredNote = noteInput.text.toString().trim()
-                          showCategoryStep()
+                  displayCard.addView(amountTextView)
+                  displayCard.addView(noteInput)
+                  sheetContainer.addView(displayCard)
+
+                  fun refreshDisplay() {
+                      amountTextView.text = if (amountString.isEmpty()) "₹ 0" else "₹ $amountString"
+                      amountTextView.setTextColor(
+                          if (amountString.isEmpty()) Color.parseColor("#4B5563") else Color.parseColor("#38BDF8")
+                      )
+                  }
+
+                  // Quick Boost Chips (+20, +50, +100, +500)
+                  val chipRow = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      setPadding(0, dp(10), 0, dp(6))
+                  }
+                  listOf(20, 50, 100, 500).forEachIndexed { idx, boost ->
+                      val chip = TextView(this).apply {
+                          text = "+₹$boost"
+                          textSize = 13f
+                          setTypeface(null, Typeface.BOLD)
+                          setTextColor(Color.parseColor("#A5B4FC"))
+                          gravity = Gravity.CENTER
+                          setPadding(0, dp(8), 0, dp(8))
+                          background = GradientDrawable().apply {
+                              setColor(Color.parseColor("#181B2C"))
+                              cornerRadius = dp(14).toFloat()
+                              setStroke(dp(1), Color.parseColor("#312E81"))
+                          }
+                          layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                              if (idx > 0) leftMargin = dp(8)
+                          }
+                          setOnClickListener {
+                              it.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                              val current = amountString.toDoubleOrNull() ?: 0.0
+                              val updated = current + boost
+                              amountString = if (updated % 1.0 == 0.0) updated.toInt().toString() else updated.toString()
+                              refreshDisplay()
+                          }
+                      }
+                      chipRow.addView(chip)
+                  }
+                  sheetContainer.addView(chipRow)
+
+                  // Built-in Lock-Screen Tactile Numpad
+                  val keys = listOf(
+                      listOf("1", "2", "3"),
+                      listOf("4", "5", "6"),
+                      listOf("7", "8", "9"),
+                      listOf(".", "0", "⌫")
+                  )
+
+                  for (rowKeys in keys) {
+                      val rowLayout = LinearLayout(this).apply {
+                          orientation = LinearLayout.HORIZONTAL
+                          setPadding(0, dp(6), 0, 0)
+                      }
+                      rowKeys.forEachIndexed { index, keyLabel ->
+                          val keyBtn = TextView(this).apply {
+                              text = keyLabel
+                              textSize = 22f
+                              setTypeface(null, Typeface.BOLD)
+                              setTextColor(if (keyLabel == "⌫") Color.parseColor("#F87171") else Color.WHITE)
+                              gravity = Gravity.CENTER
+                              background = GradientDrawable().apply {
+                                  setColor(Color.parseColor(if (keyLabel == "⌫") "#2A161D" else "#191C29"))
+                                  cornerRadius = dp(16).toFloat()
+                              }
+                              layoutParams = LinearLayout.LayoutParams(0, dp(52), 1f).apply {
+                                  if (index > 0) leftMargin = dp(8)
+                              }
+                              setOnClickListener {
+                                  it.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                  when (keyLabel) {
+                                      "⌫" -> if (amountString.isNotEmpty()) amountString = amountString.dropLast(1)
+                                      "." -> if (!amountString.contains(".")) {
+                                          amountString = if (amountString.isEmpty()) "0." else "$amountString."
+                                      }
+                                      else -> {
+                                          if (amountString.length < 8) {
+                                              amountString = if (amountString == "0") keyLabel else amountString + keyLabel
+                                          }
+                                      }
+                                  }
+                                  refreshDisplay()
+                              }
+                          }
+                          rowLayout.addView(keyBtn)
+                      }
+                      sheetContainer.addView(rowLayout)
+                  }
+
+                  // Confirm Gradient Button -> Opens Category Grid
+                  val confirmBtn = TextView(this).apply {
+                      text = "Confirm Amount & Choose Category  ➔"
+                      textSize = 16f
+                      setTypeface(null, Typeface.BOLD)
+                      setTextColor(Color.WHITE)
+                      gravity = Gravity.CENTER
+                      setPadding(0, dp(16), 0, dp(16))
+                      background = GradientDrawable(
+                          GradientDrawable.Orientation.LEFT_RIGHT,
+                          intArrayOf(Color.parseColor("#4F46E5"), Color.parseColor("#9333EA"))
+                      ).apply {
+                          cornerRadius = dp(18).toFloat()
+                      }
+                      layoutParams = LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT
+                      ).apply { topMargin = dp(14) }
+
+                      setOnClickListener {
+                          it.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                          val value = amountString.toDoubleOrNull()
+                          if (value == null || value <= 0.0) {
+                              Toast.makeText(this@MainActivity, "⚠️ Enter an amount first!", Toast.LENGTH_SHORT).show()
+                          } else {
+                              enteredAmount = value
+                              enteredNote = noteInput.text.toString().trim()
+                              showCategoryGridStep()
+                          }
                       }
                   }
-
-                  val historyBtn = makeButton("📋 View History & Clear", "#2D2D3A") {
-                      showHistoryStep()
-                  }
-
-                  container.addView(title)
-                  container.addView(totalText)
-                  container.addView(amountInput)
-                  container.addView(noteInput)
-                  container.addView(confirmBtn)
-                  container.addView(historyBtn)
-
-                  amountInput.requestFocus()
-                  amountInput.postDelayed({
-                      val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-                      imm.showSoftInput(amountInput, InputMethodManager.SHOW_IMPLICIT)
-                  }, 150)
+                  sheetContainer.addView(confirmBtn)
               }
 
-              private fun showCategoryStep() {
-                  container.removeAllViews()
+              // ================= SCREEN 2: 2x3 NEON CATEGORY GRID =================
+              private fun showCategoryGridStep() {
+                  sheetContainer.removeAllViews()
+                  addDragHandle()
 
-                  val subtitle = TextView(this).apply {
-                      text = "Select Category for ₹${String.format("%.2f", enteredAmount)}"
+                  val headerRow = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      setPadding(0, 0, 0, dp(16))
+                  }
+
+                  val backBtn = TextView(this).apply {
+                      text = "⬅ Edit"
+                      textSize = 14f
+                      setTypeface(null, Typeface.BOLD)
+                      setTextColor(Color.parseColor("#A5B4FC"))
+                      setPadding(dp(14), dp(8), dp(14), dp(8))
+                      background = GradientDrawable().apply {
+                          setColor(Color.parseColor("#1E2235"))
+                          cornerRadius = dp(16).toFloat()
+                      }
+                      setOnClickListener { showCalculatorStep() }
+                  }
+
+                  val titleView = TextView(this).apply {
+                      text = "Save ₹${fmt(enteredAmount)} to..."
+                      textSize = 20f
+                      setTypeface(null, Typeface.BOLD)
+                      setTextColor(Color.WHITE)
+                      gravity = Gravity.END
+                      layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                  }
+
+                  headerRow.addView(backBtn)
+                  headerRow.addView(titleView)
+                  sheetContainer.addView(headerRow)
+
+                  val catTotals = getCategoryTotals()
+
+                  // 2-Column Grid of Category Cards
+                  for (i in categories.indices step 2) {
+                      val row = LinearLayout(this).apply {
+                          orientation = LinearLayout.HORIZONTAL
+                          setPadding(0, 0, 0, dp(12))
+                      }
+
+                      for (j in 0..1) {
+                          if (i + j < categories.size) {
+                              val (emoji, name, hex) = categories[i + j]
+                              val existingSum = catTotals[name] ?: 0.0
+
+                              val card = LinearLayout(this).apply {
+                                  orientation = LinearLayout.VERTICAL
+                                  setPadding(dp(16), dp(16), dp(16), dp(16))
+                                  background = GradientDrawable().apply {
+                                      setColor(Color.parseColor("#171A26"))
+                                      cornerRadius = dp(20).toFloat()
+                                      setStroke(dp(2), Color.parseColor(hex))
+                                  }
+                                  layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                                      if (j == 1) leftMargin = dp(12)
+                                  }
+                                  setOnClickListener {
+                                      it.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                                      saveExpense(enteredAmount, "$emoji $name", name, enteredNote)
+                                      Toast.makeText(
+                                          this@MainActivity,
+                                          "✅ Saved ₹${fmt(enteredAmount)} to $emoji $name!",
+                                          Toast.LENGTH_SHORT
+                                      ).show()
+                                      finish()
+                                  }
+                              }
+
+                              card.addView(TextView(this).apply {
+                                  text = "$emoji  $name"
+                                  textSize = 18f
+                                  setTypeface(null, Typeface.BOLD)
+                                  setTextColor(Color.WHITE)
+                              })
+
+                              card.addView(TextView(this).apply {
+                                  text = "Spent so far: ₹${fmt(existingSum)}"
+                                  textSize = 12f
+                                  setTextColor(Color.parseColor("#9CA3AF"))
+                                  setPadding(0, dp(6), 0, 0)
+                              })
+
+                              row.addView(card)
+                          }
+                      }
+                      sheetContainer.addView(row)
+                  }
+              }
+
+              // ================= SCREEN 3: ANALYTICS & HISTORY DASHBOARD =================
+              private fun showAnalyticsStep() {
+                  sheetContainer.removeAllViews()
+                  addDragHandle()
+
+                  val topBar = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      setPadding(0, 0, 0, dp(12))
+                  }
+
+                  val backBtn = TextView(this).apply {
+                      text = "⬅ Back"
+                      textSize = 14f
+                      setTypeface(null, Typeface.BOLD)
+                      setTextColor(Color.WHITE)
+                      setPadding(dp(14), dp(8), dp(14), dp(8))
+                      background = GradientDrawable().apply {
+                          setColor(Color.parseColor("#4F46E5"))
+                          cornerRadius = dp(16).toFloat()
+                      }
+                      setOnClickListener { showCalculatorStep() }
+                  }
+
+                  val heading = TextView(this).apply {
+                      text = "📊 Expense Breakdown"
                       textSize = 19f
                       setTypeface(null, Typeface.BOLD)
                       setTextColor(Color.WHITE)
                       gravity = Gravity.CENTER
-                      setPadding(0, 0, 0, 32)
+                      layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                   }
-                  container.addView(subtitle)
 
-                  val categories = listOf(
-                      "🍔 Food" to "#EF4444",
-                      "🎬 Movie" to "#8B5CF6",
-                      "📚 Study" to "#3B82F6",
-                      "⛽ Gas" to "#F59E0B",
-                      "🛒 Other" to "#10B981"
-                  )
-
-                  for ((catName, colorHex) in categories) {
-                      val btn = makeButton(catName, colorHex) {
-                          saveExpense(enteredAmount, catName, enteredNote)
-                          Toast.makeText(
-                              this,
-                              "Saved ₹$enteredAmount to $catName! Total: ₹${String.format("%.2f", getTotalSpent())}",
-                              Toast.LENGTH_LONG
-                          ).show()
-                          finish()
-                      }
-                      container.addView(btn)
-                  }
-              }
-
-              private fun showHistoryStep() {
-                  container.removeAllViews()
-
-                  val title = TextView(this).apply {
-                      text = "📊 Expense Summary"
-                      textSize = 20f
+                  val clearBtn = TextView(this).apply {
+                      text = "🗑️ Reset"
+                      textSize = 13f
                       setTypeface(null, Typeface.BOLD)
-                      setTextColor(Color.WHITE)
-                      gravity = Gravity.CENTER
-                      setPadding(0, 0, 0, 20)
+                      setTextColor(Color.parseColor("#FCA5A5"))
+                      setPadding(dp(12), dp(8), dp(12), dp(8))
+                      background = GradientDrawable().apply {
+                          setColor(Color.parseColor("#3B1219"))
+                          cornerRadius = dp(16).toFloat()
+                      }
+                      setOnClickListener {
+                          getSharedPreferences("expenses_v2", Context.MODE_PRIVATE).edit().clear().apply()
+                          Toast.makeText(this@MainActivity, "Cleared all expenses!", Toast.LENGTH_SHORT).show()
+                          showAnalyticsStep()
+                      }
                   }
-                  container.addView(title)
 
-                  val prefs = getSharedPreferences("expenses_db", Context.MODE_PRIVATE)
-                  val arr = JSONArray(prefs.getString("records", "[]"))
+                  topBar.addView(backBtn)
+                  topBar.addView(heading)
+                  topBar.addView(clearBtn)
+                  sheetContainer.addView(topBar)
 
-                  val scroll = ScrollView(this)
-                  val listText = TextView(this).apply {
-                      setTextColor(Color.parseColor("#E0E0E0"))
-                      textSize = 14f
-                      val sb = StringBuilder()
-                      if (arr.length() == 0) {
-                          sb.append("No expenses saved yet.")
-                      } else {
-                          for (i in arr.length() - 1 downTo 0) {
-                              val obj = arr.getJSONObject(i)
-                              val notePart = if (obj.optString("note").isNotEmpty()) " (${obj.optString("note")})" else ""
-                              sb.append("• ${obj.getString("time")} — ${obj.getString("category")}: ₹${obj.getDouble("amount")}$notePart\n\n")
+                  val total = getTotalSpent().coerceAtLeast(1.0)
+                  val catTotals = getCategoryTotals()
+
+                  // Visual Progress Bars per Category
+                  val barsBox = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(dp(14), dp(12), dp(14), dp(12))
+                      background = GradientDrawable().apply {
+                          setColor(Color.parseColor("#161925"))
+                          cornerRadius = dp(18).toFloat()
+                      }
+                  }
+
+                  for ((emoji, name, hex) in categories) {
+                      val amt = catTotals[name] ?: 0.0
+                      val pct = if (getTotalSpent() > 0) ((amt / total) * 100).toInt() else 0
+
+                      val labelRow = LinearLayout(this).apply {
+                          orientation = LinearLayout.HORIZONTAL
+                          setPadding(0, dp(4), 0, dp(2))
+                      }
+                      labelRow.addView(TextView(this).apply {
+                          text = "$emoji $name ($pct%)"
+                          textSize = 12f
+                          setTextColor(Color.WHITE)
+                          layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                      })
+                      labelRow.addView(TextView(this).apply {
+                          text = "₹${fmt(amt)}"
+                          textSize = 12f
+                          setTypeface(null, Typeface.BOLD)
+                          setTextColor(Color.parseColor(hex))
+                      })
+                      barsBox.addView(labelRow)
+
+                      // Bar Track
+                      val track = FrameLayout(this).apply {
+                          background = GradientDrawable().apply {
+                              setColor(Color.parseColor("#090B10"))
+                              cornerRadius = dp(6).toFloat()
+                          }
+                          layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(7)).apply {
+                              bottomMargin = dp(4)
                           }
                       }
-                      text = sb.toString()
-                  }
-                  scroll.addView(listText)
-                  container.addView(scroll, LinearLayout.LayoutParams(
-                      LinearLayout.LayoutParams.MATCH_PARENT, 550
-                  ))
-
-                  val backBtn = makeButton("⬅️ Back", "#4F46E5") { showAmountStep() }
-                  val clearBtn = makeButton("🗑️ Reset All Expenses", "#991B1B") {
-                      prefs.edit().clear().apply()
-                      Toast.makeText(this, "All expenses cleared!", Toast.LENGTH_SHORT).show()
-                      showAmountStep()
-                  }
-
-                  container.addView(backBtn)
-                  container.addView(clearBtn)
-              }
-
-              private fun makeButton(label: String, hexColor: String, onClick: () -> Unit): Button {
-                  return Button(this).apply {
-                      text = label
-                      setTextColor(Color.WHITE)
-                      textSize = 16f
-                      isAllCaps = false
-                      background = GradientDrawable().apply {
-                          setColor(Color.parseColor(hexColor))
-                          cornerRadius = 28f
+                      val fillRatio = (pct / 100f).coerceIn(0.02f, 1f)
+                      val fill = View(this).apply {
+                          background = GradientDrawable().apply {
+                              setColor(Color.parseColor(hex))
+                              cornerRadius = dp(6).toFloat()
+                          }
+                          layoutParams = FrameLayout.LayoutParams(
+                              (resources.displayMetrics.widthPixels * 0.78f * fillRatio).toInt(),
+                              ViewGroup.LayoutParams.MATCH_PARENT
+                          )
                       }
-                      val params = LinearLayout.LayoutParams(
-                          LinearLayout.LayoutParams.MATCH_PARENT,
-                          LinearLayout.LayoutParams.WRAP_CONTENT
-                      ).apply {
-                          setMargins(0, 14, 0, 0)
-                      }
-                      layoutParams = params
-                      setOnClickListener { onClick() }
+                      if (amt > 0) track.addView(fill)
+                      barsBox.addView(track)
                   }
-              }
+                  sheetContainer.addView(barsBox)
 
-              private fun saveExpense(amount: Double, category: String, note: String) {
-                  val prefs = getSharedPreferences("expenses_db", Context.MODE_PRIVATE)
+                  // Scrollable Recent Transactions List with Individual Delete
+                  val scroll = ScrollView(this).apply {
+                      layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(190)).apply {
+                          topMargin = dp(12)
+                      }
+                  }
+                  val listCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
+                  val prefs = getSharedPreferences("expenses_v2", Context.MODE_PRIVATE)
                   val arr = JSONArray(prefs.getString("records", "[]"))
-                  val stamp = SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault()).format(Date())
+
+                  if (arr.length() == 0) {
+                      listCol.addView(TextView(this).apply {
+                          text = "No expenses recorded yet. Double-tap the back of your S25 Ultra anytime to add one!"
+                          textSize = 13f
+                          setTextColor(Color.parseColor("#6B7280"))
+                          gravity = Gravity.CENTER
+                          setPadding(dp(16), dp(24), dp(16), dp(24))
+                      })
+                  } else {
+                      for (i in arr.length() - 1 downTo 0) {
+                          val obj = arr.getJSONObject(i)
+                          val itemRow = LinearLayout(this).apply {
+                              orientation = LinearLayout.HORIZONTAL
+                              gravity = Gravity.CENTER_VERTICAL
+                              setPadding(dp(12), dp(10), dp(12), dp(10))
+                              background = GradientDrawable().apply {
+                                  setColor(Color.parseColor("#161925"))
+                                  cornerRadius = dp(14).toFloat()
+                              }
+                              layoutParams = LinearLayout.LayoutParams(
+                                  ViewGroup.LayoutParams.MATCH_PARENT,
+                                  ViewGroup.LayoutParams.WRAP_CONTENT
+                              ).apply { bottomMargin = dp(8) }
+                          }
+
+                          val noteStr = obj.optString("note", "")
+                          val sub = if (noteStr.isNotEmpty()) "${obj.getString("time")} • $noteStr" else obj.getString("time")
+
+                          val infoCol = LinearLayout(this).apply {
+                              orientation = LinearLayout.VERTICAL
+                              layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                          }
+                          infoCol.addView(TextView(this).apply {
+                              text = obj.getString("category")
+                              textSize = 14f
+                              setTypeface(null, Typeface.BOLD)
+                              setTextColor(Color.WHITE)
+                          })
+                          infoCol.addView(TextView(this).apply {
+                              text = sub
+                              textSize = 11f
+                              setTextColor(Color.parseColor("#9CA3AF"))
+                          })
+
+                          val amtView = TextView(this).apply {
+                              text = "₹${fmt(obj.getDouble("amount"))}"
+                              textSize = 15f
+                              setTypeface(null, Typeface.BOLD)
+                              setTextColor(Color.parseColor("#38BDF8"))
+                              setPadding(dp(8), 0, dp(12), 0)
+                          }
+
+                          val delBtn = TextView(this).apply {
+                              text = "✕"
+                              textSize = 14f
+                              setTypeface(null, Typeface.BOLD)
+                              setTextColor(Color.parseColor("#F87171"))
+                              setPadding(dp(8), dp(4), dp(8), dp(4))
+                              setOnClickListener {
+                                  deleteExpenseAt(i)
+                                  showAnalyticsStep()
+                              }
+                          }
+
+                          itemRow.addView(infoCol)
+                          itemRow.addView(amtView)
+                          itemRow.addView(delBtn)
+                          listCol.addView(itemRow)
+                      }
+                  }
+
+                  scroll.addView(listCol)
+                  sheetContainer.addView(scroll)
+              }
+
+              private fun makeStatCard(label: String, value: String, accentHex: String): LinearLayout {
+                  return LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(dp(14), dp(10), dp(14), dp(10))
+                      background = GradientDrawable().apply {
+                          setColor(Color.parseColor("#161925"))
+                          cornerRadius = dp(16).toFloat()
+                          setStroke(dp(1), Color.parseColor(accentHex))
+                      }
+                      layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+
+                      addView(TextView(this@MainActivity).apply {
+                          text = label
+                          textSize = 10f
+                          setTypeface(null, Typeface.BOLD)
+                          setTextColor(Color.parseColor("#9CA3AF"))
+                      })
+                      addView(TextView(this@MainActivity).apply {
+                          text = value
+                          textSize = 18f
+                          setTypeface(null, Typeface.BOLD)
+                          setTextColor(Color.WHITE)
+                          setPadding(0, dp(2), 0, 0)
+                      })
+                  }
+              }
+
+              private fun fmt(v: Double): String =
+                  if (v % 1.0 == 0.0) v.toInt().toString() else String.format(Locale.US, "%.2f", v)
+
+              private fun saveExpense(amount: Double, displayCat: String, rawCat: String, note: String) {
+                  val prefs = getSharedPreferences("expenses_v2", Context.MODE_PRIVATE)
+                  val arr = JSONArray(prefs.getString("records", "[]"))
+                  val now = Date()
+                  val stamp = SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault()).format(now)
+                  val dayKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(now)
                   val item = JSONObject().apply {
                       put("amount", amount)
-                      put("category", category)
+                      put("category", displayCat)
+                      put("rawCat", rawCat)
                       put("note", note)
                       put("time", stamp)
+                      put("day", dayKey)
                   }
                   arr.put(item)
                   prefs.edit().putString("records", arr.toString()).apply()
               }
 
+              private fun deleteExpenseAt(index: Int) {
+                  val prefs = getSharedPreferences("expenses_v2", Context.MODE_PRIVATE)
+                  val arr = JSONArray(prefs.getString("records", "[]"))
+                  val updated = JSONArray()
+                  for (i in 0 until arr.length()) {
+                      if (i != index) updated.put(arr.getJSONObject(i))
+                  }
+                  prefs.edit().putString("records", updated.toString()).apply()
+              }
+
               private fun getTotalSpent(): Double {
-                  val prefs = getSharedPreferences("expenses_db", Context.MODE_PRIVATE)
+                  val prefs = getSharedPreferences("expenses_v2", Context.MODE_PRIVATE)
+                  val arr = JSONArray(prefs.getString("records", "[]"))
+                  var sum = 0.0
+                  for (i in 0 until arr.length()) sum += arr.getJSONObject(i).optDouble("amount", 0.0)
+                  return sum
+              }
+
+              private fun getTodaySpent(): Double {
+                  val todayKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+                  val prefs = getSharedPreferences("expenses_v2", Context.MODE_PRIVATE)
                   val arr = JSONArray(prefs.getString("records", "[]"))
                   var sum = 0.0
                   for (i in 0 until arr.length()) {
-                      sum += arr.getJSONObject(i).optDouble("amount", 0.0)
+                      val obj = arr.getJSONObject(i)
+                      if (obj.optString("day") == todayKey) sum += obj.optDouble("amount", 0.0)
                   }
                   return sum
+              }
+
+              private fun getCategoryTotals(): Map<String, Double> {
+                  val prefs = getSharedPreferences("expenses_v2", Context.MODE_PRIVATE)
+                  val arr = JSONArray(prefs.getString("records", "[]"))
+                  val map = mutableMapOf<String, Double>()
+                  for (i in 0 until arr.length()) {
+                      val obj = arr.getJSONObject(i)
+                      val key = obj.optString("rawCat", "Other")
+                      map[key] = (map[key] ?: 0.0) + obj.optDouble("amount", 0.0)
+                  }
+                  return map
               }
           }
           EOF
 
           gradle assembleDebug --no-daemon
-          cp build/outputs/apk/debug/*.apk ../QuickExpense.apk
+          cp build/outputs/apk/debug/*.apk ../QuickExpense-v2.apk
 
       - name: Upload Compiled APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: QuickExpense-S25Ultra-APK
-          path: QuickExpense.apk
+          name: QuickExpense-v2-S25Ultra-APK
+          path: QuickExpense-v2.apk
           if-no-files-found: error
 
       - name: Publish Direct APK to Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.${{ github.run_number }}
-          name: "QuickExpense S25 Ultra APK v1.0.${{ github.run_number }}"
-          files: QuickExpense.apk
+          tag_name: v2.0.${{ github.run_number }}
+          name: "QuickExpense v2.0 OneUI Edition (Run #${{ github.run_number }})"
+          files: QuickExpense-v2.apk
 
       - name: Print Direct Download Link
         run: |
-          echo "## 🚀 [CLICK HERE TO DOWNLOAD QuickExpense.apk DIRECTLY](https://github.com/${{ github.repository }}/releases/latest/download/QuickExpense.apk)" >> $GITHUB_STEP_SUMMARY
-          echo "Direct APK URL: https://github.com/${{ github.repository }}/releases/latest/download/QuickExpense.apk"
+          echo "## 🔥 [DOWNLOAD QuickExpense-v2.apk (NEW ONE UI DESIGN)](https://github.com/${{ github.repository }}/releases/latest/download/QuickExpense-v2.apk)" >> $GITHUB_STEP_SUMMARY
